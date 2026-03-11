@@ -25,6 +25,8 @@ export default function Login() {
 
   const fazerLogin = async (e: React.FormEvent) => {
     e.preventDefault();
+    setErro("");
+    setCarregando(true);
 
     setErro("");
     setCarregando(true);
@@ -51,9 +53,7 @@ export default function Login() {
         className="text-white px-8 py-4 shadow"
         style={{ background: "var(--weg-blue)" }}
       >
-        <h1 className="text-lg font-semibold">
-          Sistema de Controle de Acesso
-        </h1>
+        <h1 className="text-lg font-semibold">Sistema de Controle de Acesso</h1>
       </header>
 
       {/* Área central */}
@@ -65,7 +65,6 @@ export default function Login() {
           className="bg-white rounded-xl shadow-lg p-8 w-full max-w-md"
           style={{ border: "1px solid var(--weg-border)" }}
         >
-
           <div className="text-center mb-6">
             <h2
               className="text-2xl font-bold"
@@ -73,18 +72,16 @@ export default function Login() {
             >
               Acesso ao Sistema
             </h2>
-
             <p className="text-gray-500 text-sm mt-1">
-              Utilize suas credenciais institucionais
+              Insira seu usuário e senha
             </p>
           </div>
 
           <form onSubmit={fazerLogin} className="space-y-4">
-
             <input
-              type="email"
-              placeholder="Email institucional"
-              className="w-full px-4 py-2 rounded-lg border focus:outline-none"
+              type="text"
+              placeholder="Nome de usuário (Ex: João Silva)"
+              className="w-full px-4 py-2 rounded-lg border focus:outline-none focus:border-blue-500"
               style={{ border: "1px solid var(--weg-border)" }}
               value={email}
               onChange={(e) => setEmail(e.target.value)}
@@ -94,12 +91,14 @@ export default function Login() {
             <input
               type="password"
               placeholder="Senha"
-              className="w-full px-4 py-2 rounded-lg border focus:outline-none"
+              className="w-full px-4 py-2 rounded-lg border focus:outline-none focus:border-blue-500"
               style={{ border: "1px solid var(--weg-border)" }}
               value={senha}
               onChange={(e) => setSenha(e.target.value)}
               required
             />
+
+            {erro && <p className="text-red-500 text-sm font-medium">{erro}</p>}
 
             <button
               type="submit"
@@ -119,7 +118,6 @@ export default function Login() {
         </div>
       </div>
 
-      {/* Rodapé institucional */}
       <footer className="text-center text-sm py-4 text-gray-500">
         Sistema interno • Controle de fila de banheiro
       </footer>
