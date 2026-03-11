@@ -1,54 +1,57 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { supabase } from "@/lib/supabase";
+import { useRouter } from "next/navigation";
 
 export default function Login() {
-
-  const [email, setEmail] = useState("");
+  const [nome, setNome] = useState("");
   const [senha, setSenha] = useState("");
   const [erro, setErro] = useState("");
   const [carregando, setCarregando] = useState(false);
-
-  // Verifica se já existe sessão ativa
-  useEffect(() => {
-    const verificarSessao = async () => {
-      const { data } = await supabase.auth.getSession();
-
-      if (data.session) {
-        window.location.href = "/";
-      }
-    };
-
-    verificarSessao();
-  }, []);
+  const router = useRouter();
 
   const fazerLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setErro("");
     setCarregando(true);
 
-    setErro("");
-    setCarregando(true);
+    try {
+      // 1. Procura o e-mail do usuário pelo NOME na sua tabela pública
+      const { data: usuarioDados, error: erroBusca } = await supabase
+        .from("users")
+        .select("email")
+        .eq("name", nome)
+        .single();
 
-    const { error } = await supabase.auth.signInWithPassword({
-      email: email,
-      password: senha
-    });
+      if (erroBusca || !usuarioDados) {
+        setErro("Usuário não encontrado.");
+        setCarregando(false);
+        return;
+      }
 
-    if (error) {
-      setErro("Email ou senha inválidos");
+      // 2. Faz o login seguro no Auth nativo do Supabase usando o email encontrado e a senha
+      const { data, error: erroAuth } = await supabase.auth.signInWithPassword({
+        email: usuarioDados.email,
+        password: senha,
+      });
+
+      if (erroAuth) {
+        setErro("Senha incorreta.");
+      } else {
+        // Sucesso! O Supabase já salvou a sessão no navegador automaticamente
+        router.push("/");
+      }
+    } catch (err) {
+      setErro("Ocorreu um erro ao tentar logar.");
+    } finally {
       setCarregando(false);
-      return;
     }
-
-    window.location.href = "/";
   };
 
   return (
     <main className="min-h-screen flex flex-col">
-
-      {/* Barra superior institucional */}
+      {/* Barra superior estilo WEG/SENAI */}
       <header
         className="text-white px-8 py-4 shadow"
         style={{ background: "var(--weg-blue)" }}
@@ -56,7 +59,6 @@ export default function Login() {
         <h1 className="text-lg font-semibold">Sistema de Controle de Acesso</h1>
       </header>
 
-      {/* Área central */}
       <div
         className="flex flex-1 items-center justify-center px-6"
         style={{ background: "var(--weg-gray)" }}
@@ -83,8 +85,8 @@ export default function Login() {
               placeholder="Nome de usuário (Ex: João Silva)"
               className="w-full px-4 py-2 rounded-lg border focus:outline-none focus:border-blue-500"
               style={{ border: "1px solid var(--weg-border)" }}
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
+              value={nome}
+              onChange={(e) => setNome(e.target.value)}
               required
             />
 
@@ -101,19 +103,12 @@ export default function Login() {
             {erro && <p className="text-red-500 text-sm font-medium">{erro}</p>}
 
             <button
-              type="submit"
               disabled={carregando}
-              className="w-full py-2 rounded-lg text-white font-medium transition-colors"
+              className="w-full py-2 rounded-lg text-white font-medium transition-colors disabled:opacity-50"
               style={{ background: "var(--weg-blue)" }}
             >
               {carregando ? "Entrando..." : "Entrar"}
             </button>
-
-            {erro && (
-              <p className="text-red-500 text-sm text-center">
-                {erro}
-              </p>
-            )}
           </form>
         </div>
       </div>
