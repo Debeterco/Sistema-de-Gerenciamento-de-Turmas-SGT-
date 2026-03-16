@@ -412,9 +412,19 @@ export default function Home() {
       <header className="bg-[#00579D] text-white px-8 py-4 shadow-md flex justify-between items-center z-10">
         <div className="flex items-center gap-4">
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src="/logo-senai.png" alt="Logo SENAI" className="h-14 sm:h-16 object-contain" onError={(e) => e.currentTarget.style.display = 'none'} />
+          <img 
+            src="/logo-senai.png" 
+            alt="Logo SENAI" 
+            className="h-8 sm:h-10 object-contain" // Reduzido aqui
+            onError={(e) => e.currentTarget.style.display = 'none'} 
+          />
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src="/logo-weg.png" alt="Logo WEG" className="h-14 sm:h-16 object-contain" onError={(e) => e.currentTarget.style.display = 'none'} />
+          <img 
+            src="/logo-weg.png" 
+            alt="Logo WEG" 
+            className="h-8 sm:h-10 object-contain" // Reduzido aqui
+            onError={(e) => e.currentTarget.style.display = 'none'} 
+          />
         </div>
         <div className="flex items-center gap-6">
           <span className="text-sm tracking-wide hidden md:block">
