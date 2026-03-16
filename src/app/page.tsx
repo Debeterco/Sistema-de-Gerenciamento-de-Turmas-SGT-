@@ -86,7 +86,15 @@ export default function Home() {
   const [novoUserCargo, setNovoUserCargo] = useState("aluno");
 
   const [isStatsExpanded, setIsStatsExpanded] = useState(false);
-  const [isHistoricoOpen, setIsHistoricoOpen] = useState(false); 
+  const [isHistoricoOpen, setIsHistoricoOpen] = useState(false);
+
+  // ================= ESTADOS PARA RANKING COM BUSCA E RELATÓRIO =================
+  const [buscaRanking, setBuscaRanking] = useState("");
+  const [alunoRelatorio, setAlunoRelatorio] = useState<string | null>(null);
+
+  // ================= ESTADOS PARA RELATÓRIO DA TURMA =================
+  const [abaHistorico, setAbaHistorico] = useState<"lista" | "relatorio">("lista");
+  const [diaSelecionado, setDiaSelecionado] = useState<string | null>(null);
 
   // ================= NOVOS ESTADOS PARA BUSCA E FILTROS =================
   const [buscaTurmas, setBuscaTurmas] = useState("");
@@ -544,9 +552,11 @@ export default function Home() {
   };
 
   const gerarRankingDaSala = () => {
+    const hoje = new Date().toLocaleDateString("pt-BR");
     const statsPorAluno: Record<string, { name: string, idas: number, tempoTotalMin: number }> = {};
     historicoDaTurma.forEach(log => {
       if (log.status !== 'concluido' || !log.go_time || !log.back_time) return;
+      if (new Date(log.go_time).toLocaleDateString("pt-BR") !== hoje) return;
       const tempoMin = (new Date(log.back_time).getTime() - new Date(log.go_time).getTime()) / 60000;
       if (!statsPorAluno[log.user_id]) statsPorAluno[log.user_id] = { name: log.name, idas: 0, tempoTotalMin: 0 };
       statsPorAluno[log.user_id].idas += 1;
@@ -555,6 +565,102 @@ export default function Home() {
     return Object.values(statsPorAluno).map(s => ({ nome: s.name, idas: s.idas, tempoTotal: Math.round(s.tempoTotalMin), mediaTempo: Math.round(s.tempoTotalMin / s.idas) })).sort((a, b) => b.idas - a.idas);
   };
   const rankingSala = gerarRankingDaSala();
+
+  // ================= RELATÓRIO POR DIA DA SEMANA =================
+  const DIAS_SEMANA = ["Domingo", "Segunda-feira", "Terça-feira", "Quarta-feira", "Quinta-feira", "Sexta-feira", "Sábado"];
+
+  const gerarRelatorioAluno = (nomeAluno: string) => {
+    const logsDoAluno = historicoDaTurma.filter(log =>
+      log.status === 'concluido' && log.go_time && log.back_time &&
+      log.name.toLowerCase() === nomeAluno.toLowerCase()
+    );
+
+    const porDia: Record<number, { idas: number, tempoTotalMin: number, registros: { goTime: string, backTime: string, tempoMin: number }[] }> = {};
+
+    logsDoAluno.forEach(log => {
+      const dia = new Date(log.go_time!).getDay();
+      const tempoMin = (new Date(log.back_time!).getTime() - new Date(log.go_time!).getTime()) / 60000;
+      if (!porDia[dia]) porDia[dia] = { idas: 0, tempoTotalMin: 0, registros: [] };
+      porDia[dia].idas += 1;
+      if (tempoMin >= 0) {
+        porDia[dia].tempoTotalMin += tempoMin;
+        porDia[dia].registros.push({ goTime: log.go_time!, backTime: log.back_time!, tempoMin: Math.round(tempoMin) });
+      }
+    });
+
+    return Object.entries(porDia)
+      .sort(([a], [b]) => Number(a) - Number(b))
+      .map(([dia, stats]) => ({
+        dia: DIAS_SEMANA[Number(dia)],
+        diaNum: Number(dia),
+        idas: stats.idas,
+        tempoTotal: Math.round(stats.tempoTotalMin),
+        mediaTempo: Math.round(stats.tempoTotalMin / stats.idas),
+        registros: stats.registros,
+      }));
+  };
+
+  // ================= RELATÓRIO DA TURMA POR DIA =================
+  const gerarRelatorioTurma = () => {
+    const logsConcluidos = historicoDaTurma.filter(log =>
+      log.status === 'concluido' && log.go_time && log.back_time
+    );
+
+    const porData: Record<string, {
+      data: string,
+      dataISO: string,
+      alunos: { name: string, goTime: string, backTime: string, tempoMin: number }[],
+      resumoPorAluno: Record<string, { name: string, idas: number, tempoTotal: number }>
+    }> = {};
+
+    logsConcluidos.forEach(log => {
+      const dataObj = new Date(log.go_time!);
+      const dataChave = dataObj.toLocaleDateString("pt-BR");
+      const dataISO = dataObj.toISOString().split("T")[0];
+      const tempoMin = Math.round((new Date(log.back_time!).getTime() - new Date(log.go_time!).getTime()) / 60000);
+      if (!porData[dataChave]) porData[dataChave] = { data: dataChave, dataISO, alunos: [], resumoPorAluno: {} };
+      if (tempoMin >= 0) {
+        porData[dataChave].alunos.push({ name: log.name, goTime: log.go_time!, backTime: log.back_time!, tempoMin });
+        if (!porData[dataChave].resumoPorAluno[log.user_id])
+          porData[dataChave].resumoPorAluno[log.user_id] = { name: log.name, idas: 0, tempoTotal: 0 };
+        porData[dataChave].resumoPorAluno[log.user_id].idas += 1;
+        porData[dataChave].resumoPorAluno[log.user_id].tempoTotal += tempoMin;
+      }
+    });
+
+    return Object.values(porData)
+      .sort((a, b) => new Date(b.dataISO).getTime() - new Date(a.dataISO).getTime());
+  };
+  useEffect(() => {
+    if (!currentUser || !isPrivileged) return;
+
+    const verificarLimpezaSemanal = async () => {
+      const CHAVE_LIMPEZA = `ultima_limpeza_turma_${turmaAtiva?.id || 'global'}`;
+      const ultimaLimpeza = localStorage.getItem(CHAVE_LIMPEZA);
+      const agora = new Date();
+      const umaSemanaMsec = 7 * 24 * 60 * 60 * 1000;
+
+      const deveApagar = !ultimaLimpeza || (agora.getTime() - new Date(ultimaLimpeza).getTime()) >= umaSemanaMsec;
+
+      if (deveApagar) {
+        const seteDiasAtras = new Date(agora.getTime() - umaSemanaMsec).toISOString();
+        const { error } = await supabase
+          .from("logs")
+          .delete()
+          .lt("require_time", seteDiasAtras)
+          .in("status", ["concluido", "cancelado", "pedido_historico", "saida_historico"]);
+
+        if (!error) {
+          localStorage.setItem(CHAVE_LIMPEZA, agora.toISOString());
+          console.log("🧹 Limpeza semanal de logs concluída:", new Date().toLocaleString("pt-BR"));
+        } else {
+          console.error("Erro na limpeza semanal:", error);
+        }
+      }
+    };
+
+    verificarLimpezaSemanal();
+  }, [currentUser, turmaAtiva]);
 
   const formatarHora = (isoDate: string | null) => isoDate ? new Date(isoDate).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "-";
   const getEventTime = (log: LogPedido) => log.status.includes('saida') ? log.go_time : log.status === 'concluido' ? log.back_time : log.require_time;
@@ -932,25 +1038,106 @@ export default function Home() {
             
             {/* PAINEL RETRÁTIL ESQUERDO: RANKING */}
             {isPrivileged && (
-              <div className={`bg-white border-2 border-[#00579D] shadow-md transition-all duration-300 ease-in-out overflow-hidden flex flex-col shrink-0 ${isStatsExpanded ? 'w-full xl:w-[350px]' : 'w-full xl:w-[72px]'} h-fit`}>
+              <div className={`bg-white border-2 border-[#00579D] shadow-md transition-all duration-300 ease-in-out overflow-hidden flex flex-col shrink-0 ${isStatsExpanded ? 'w-full xl:w-[380px]' : 'w-full xl:w-[72px]'} h-fit`}>
                 <button onClick={() => setIsStatsExpanded(!isStatsExpanded)} className="bg-[#00579D] text-white p-4 flex items-center justify-between w-full hover:bg-[#003E7E] transition-colors" title={isStatsExpanded ? "Fechar Resumo" : "Ver Resumo da Sala"}>
-                  {isStatsExpanded ? <span className="font-bold uppercase tracking-widest text-sm flex items-center gap-2 whitespace-nowrap"><BarChart3 size={18} className="shrink-0"/> Resumo da Sala</span> : <BarChart3 size={24} className="mx-auto shrink-0"/>}
+                  {isStatsExpanded ? <span className="font-bold uppercase tracking-widest text-sm flex items-center gap-2 whitespace-nowrap"><BarChart3 size={18} className="shrink-0"/> Resumo de Hoje</span> : <BarChart3 size={24} className="mx-auto shrink-0"/>}
                   {isStatsExpanded && <XCircle size={18} className="shrink-0" />}
                 </button>
                 <div className={`transition-opacity duration-300 ${isStatsExpanded ? 'opacity-100 p-0' : 'opacity-0 h-0 overflow-hidden'}`}>
-                  {rankingSala.length === 0 ? (
-                    <p className="p-6 text-center text-sm font-bold text-gray-400 uppercase">Sem registros</p>
-                  ) : (
-                    <ul className="divide-y divide-gray-200 max-h-[500px] overflow-y-auto">
-                      <li className="bg-gray-100 px-4 py-2 flex justify-between items-center text-[10px] font-black uppercase text-gray-500 tracking-widest"><span>Aluno (Idas)</span><span className="text-right">Tempo Total / Média</span></li>
-                      {rankingSala.map((estatistica, i) => (
-                        <li key={i} className="p-4 flex justify-between items-center hover:bg-gray-50">
-                          <div><p className="font-extrabold text-[#2B2B2B] uppercase text-sm">{estatistica.nome}</p><p className="text-xs font-bold text-[#00579D]">{estatistica.idas} {estatistica.idas === 1 ? 'ida' : 'idas'}</p></div>
-                          <div className="text-right"><p className="text-sm font-bold text-gray-700">{estatistica.tempoTotal} min</p><p className="text-[10px] font-bold text-gray-400 uppercase">Média: {estatistica.mediaTempo} min</p></div>
+
+                  {/* MODAL DE RELATÓRIO POR DIA */}
+                  {alunoRelatorio && (() => {
+                    const relatorio = gerarRelatorioAluno(alunoRelatorio);
+                    return (
+                      <div className="p-4 border-b-2 border-[#00579D] bg-blue-50">
+                        <div className="flex justify-between items-center mb-3">
+                          <div>
+                            <p className="text-[10px] font-black uppercase text-gray-400 tracking-widest">Relatório Semanal</p>
+                            <p className="font-extrabold text-[#00579D] uppercase text-sm truncate max-w-[220px]">{alunoRelatorio}</p>
+                          </div>
+                          <button onClick={() => setAlunoRelatorio(null)} className="text-gray-400 hover:text-red-600 transition-colors p-1">
+                            <XCircle size={18}/>
+                          </button>
+                        </div>
+                        {relatorio.length === 0 ? (
+                          <p className="text-center text-xs font-bold text-gray-400 uppercase py-4">Nenhum dado encontrado</p>
+                        ) : (
+                          <div className="space-y-2">
+                            {relatorio.map((dia) => (
+                              <div key={dia.diaNum} className="bg-white border-2 border-gray-200 p-3">
+                                <div className="flex justify-between items-center mb-1">
+                                  <p className="font-extrabold text-[#2B2B2B] uppercase text-xs">{dia.dia}</p>
+                                  <span className="text-[10px] font-black bg-[#00579D] text-white px-2 py-0.5">
+                                    {dia.idas} {dia.idas === 1 ? 'ida' : 'idas'}
+                                  </span>
+                                </div>
+                                <div className="flex justify-between text-[10px] font-bold text-gray-500 uppercase mb-2">
+                                  <span>Total: {dia.tempoTotal} min</span>
+                                  <span>Média: {dia.mediaTempo} min</span>
+                                </div>
+                                <div className="space-y-1">
+                                  {dia.registros.map((reg, idx) => (
+                                    <div key={idx} className="flex justify-between text-[10px] font-bold text-gray-400 bg-gray-50 px-2 py-1">
+                                      <span>{formatarHora(reg.goTime)} → {formatarHora(reg.backTime)}</span>
+                                      <span className={`font-black ${reg.tempoMin >= (turmaAtiva?.time_limit_minutes || 15) ? 'text-red-600' : 'text-gray-600'}`}>{reg.tempoMin} min</span>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()}
+
+                  {/* BUSCA NO RANKING */}
+                  <div className="p-3 border-b-2 border-gray-200 bg-gray-50">
+                    <div className="relative">
+                      <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" size={14}/>
+                      <input
+                        type="text"
+                        placeholder="Buscar aluno..."
+                        className="w-full pl-8 pr-3 py-2 border-2 border-gray-300 focus:border-[#00579D] outline-none text-xs font-bold uppercase"
+                        value={buscaRanking}
+                        onChange={e => { setBuscaRanking(e.target.value); setAlunoRelatorio(null); }}
+                      />
+                    </div>
+                  </div>
+
+                  {/* LISTA DO RANKING */}
+                  {(() => {
+                    const rankingFiltrado = rankingSala.filter(e =>
+                      e.nome.toLowerCase().includes(buscaRanking.toLowerCase())
+                    );
+                    return rankingFiltrado.length === 0 ? (
+                      <p className="p-6 text-center text-sm font-bold text-gray-400 uppercase">Nenhuma saída hoje</p>
+                    ) : (
+                      <ul className="divide-y divide-gray-200 max-h-[500px] overflow-y-auto">
+                        <li className="bg-gray-100 px-4 py-2 flex justify-between items-center text-[10px] font-black uppercase text-gray-500 tracking-widest">
+                          <span>Aluno (Idas hoje)</span>
+                          <span className="text-right">Total / Média</span>
                         </li>
-                      ))}
-                    </ul>
-                  )}
+                        {rankingFiltrado.map((estatistica, i) => (
+                          <li
+                            key={i}
+                            className={`p-4 flex justify-between items-center hover:bg-blue-50 cursor-pointer transition-colors ${alunoRelatorio === estatistica.nome ? 'bg-blue-50 border-l-4 border-[#00579D]' : ''}`}
+                            onClick={() => setAlunoRelatorio(alunoRelatorio === estatistica.nome ? null : estatistica.nome)}
+                            title="Clique para ver o relatório por dia"
+                          >
+                            <div>
+                              <p className="font-extrabold text-[#2B2B2B] uppercase text-sm">{estatistica.nome}</p>
+                              <p className="text-xs font-bold text-[#00579D]">{estatistica.idas} {estatistica.idas === 1 ? 'ida' : 'idas'}</p>
+                            </div>
+                            <div className="text-right">
+                              <p className="text-sm font-bold text-gray-700">{estatistica.tempoTotal} min</p>
+                              <p className="text-[10px] font-bold text-gray-400 uppercase">Média: {estatistica.mediaTempo} min</p>
+                            </div>
+                          </li>
+                        ))}
+                      </ul>
+                    );
+                  })()}
                 </div>
               </div>
             )}
@@ -1082,54 +1269,232 @@ export default function Home() {
 
               </div>
 
-              {/* ABAIXO DE TUDO: HISTÓRICO DA TURMA (AGORA EM ACORDEÃO RETRÁTIL COM BUSCA) */}
+              {/* ABAIXO DE TUDO: HISTÓRICO DA TURMA COM ABAS */}
               {isPrivileged && historicoDaTurma.length > 0 && (
                 <section className="bg-white shadow-md border-t-8 border-[#2B2B2B] mt-8 w-full">
-                  <button 
-                    onClick={() => setIsHistoricoOpen(!isHistoricoOpen)} 
+                  <button
+                    onClick={() => setIsHistoricoOpen(!isHistoricoOpen)}
                     className="w-full bg-[#2B2B2B] text-white px-6 py-4 font-bold uppercase tracking-widest flex justify-between items-center hover:bg-black transition-colors"
                   >
                     <span>Histórico de Saídas da Sala ({historicoVisivel.length})</span>
                     {isHistoricoOpen ? <ChevronUp size={20}/> : <ChevronDown size={20}/>}
                   </button>
-                  
+
                   {isHistoricoOpen && (
                     <div className="bg-white border-x-2 border-b-2 border-[#2B2B2B]">
-                      
-                      {/* FILTRO DE HISTÓRICO */}
-                      <div className="p-4 border-b-2 border-gray-200 bg-gray-50">
-                        <div className="relative">
-                          <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" size={16}/>
-                          <input type="text" placeholder="Buscar aluno no histórico..." className="w-full pl-9 pr-3 py-2 border-2 border-gray-300 focus:border-[#2B2B2B] outline-none text-sm font-bold uppercase" value={filtroHistorico} onChange={e => setFiltroHistorico(e.target.value)} />
-                        </div>
+
+                      {/* ABAS */}
+                      <div className="flex border-b-2 border-gray-200">
+                        <button
+                          onClick={() => setAbaHistorico("lista")}
+                          className={`flex-1 py-3 px-4 font-bold uppercase text-xs tracking-wider transition-colors flex items-center justify-center gap-2 ${abaHistorico === "lista" ? "bg-[#2B2B2B] text-white" : "bg-gray-50 text-gray-500 hover:bg-gray-100"}`}
+                        >
+                          <ClipboardList size={14}/> Lista de Registros
+                        </button>
+                        <button
+                          onClick={() => { setAbaHistorico("relatorio"); setDiaSelecionado(null); }}
+                          className={`flex-1 py-3 px-4 font-bold uppercase text-xs tracking-wider transition-colors flex items-center justify-center gap-2 ${abaHistorico === "relatorio" ? "bg-[#00579D] text-white" : "bg-gray-50 text-gray-500 hover:bg-gray-100"}`}
+                        >
+                          <BarChart3 size={14}/> Relatório por Dia
+                        </button>
                       </div>
 
-                      <div className="overflow-x-auto max-h-[400px] overflow-y-auto">
-                        <table className="w-full text-left border-collapse">
-                          <thead className="sticky top-0 bg-[#F4F4F4] shadow-sm">
-                            <tr className="border-b-2 border-[#2B2B2B] text-[#2B2B2B] uppercase text-xs">
-                              <th className="p-4 font-bold">Hora</th><th className="p-4 font-bold">Aluno</th><th className="p-4 font-bold">Status</th><th className="p-4 font-bold hidden sm:table-cell">Tempo Fora</th>
-                            </tr>
-                          </thead>
-                          <tbody className="divide-y divide-gray-200">
-                            {historicoVisivel.length === 0 ? (
-                              <tr><td colSpan={4} className="p-6 text-center text-gray-400 font-bold uppercase">Nenhum registro encontrado.</td></tr>
-                            ) : (
-                              historicoVisivel.map((log) => {
-                                const badge = getStatusDisplay(log.status);
+                      {/* ABA 1: LISTA DE REGISTROS (original) */}
+                      {abaHistorico === "lista" && (
+                        <>
+                          <div className="p-4 border-b-2 border-gray-200 bg-gray-50">
+                            <div className="relative">
+                              <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" size={16}/>
+                              <input type="text" placeholder="Buscar aluno no histórico..." className="w-full pl-9 pr-3 py-2 border-2 border-gray-300 focus:border-[#2B2B2B] outline-none text-sm font-bold uppercase" value={filtroHistorico} onChange={e => setFiltroHistorico(e.target.value)} />
+                            </div>
+                          </div>
+                          <div className="overflow-x-auto max-h-[400px] overflow-y-auto">
+                            <table className="w-full text-left border-collapse">
+                              <thead className="sticky top-0 bg-[#F4F4F4] shadow-sm">
+                                <tr className="border-b-2 border-[#2B2B2B] text-[#2B2B2B] uppercase text-xs">
+                                  <th className="p-4 font-bold">Hora</th><th className="p-4 font-bold">Aluno</th><th className="p-4 font-bold">Status</th><th className="p-4 font-bold hidden sm:table-cell">Tempo Fora</th>
+                                </tr>
+                              </thead>
+                              <tbody className="divide-y divide-gray-200">
+                                {historicoVisivel.length === 0 ? (
+                                  <tr><td colSpan={4} className="p-6 text-center text-gray-400 font-bold uppercase">Nenhum registro encontrado.</td></tr>
+                                ) : (
+                                  historicoVisivel.map((log) => {
+                                    const badge = getStatusDisplay(log.status);
+                                    return (
+                                      <tr key={log.id} className="hover:bg-gray-50">
+                                        <td className="p-4 font-mono text-sm font-bold text-gray-600">{formatarHora(getEventTime(log))}</td>
+                                        <td className="p-4 font-extrabold text-[#2B2B2B] uppercase">{log.name}</td>
+                                        <td className="p-4"><span className={`px-3 py-1 font-bold text-[10px] uppercase tracking-wider ${badge.cor}`}>{badge.texto}</span></td>
+                                        <td className="p-4 text-xs font-bold text-gray-500 hidden sm:table-cell uppercase">{renderDetalhes(log)}</td>
+                                      </tr>
+                                    );
+                                  })
+                                )}
+                              </tbody>
+                            </table>
+                          </div>
+                        </>
+                      )}
+
+                      {/* ABA 2: RELATÓRIO DA TURMA POR DIA */}
+                      {abaHistorico === "relatorio" && (() => {
+                        const relatorioTurma = gerarRelatorioTurma();
+                        return (
+                          <div className="flex flex-col md:flex-row h-auto md:min-h-[420px]">
+
+                            {/* COLUNA ESQUERDA: LISTA DE DIAS */}
+                            <div className="w-full md:w-52 border-b-2 md:border-b-0 md:border-r-2 border-gray-200 shrink-0">
+                              <div className="bg-gray-50 px-4 py-2 border-b-2 border-gray-200">
+                                <p className="text-[10px] font-black uppercase text-gray-400 tracking-widest">Selecione o dia</p>
+                              </div>
+                              <ul className="max-h-48 md:max-h-[380px] overflow-y-auto divide-y divide-gray-100">
+                                {relatorioTurma.length === 0 ? (
+                                  <p className="p-4 text-center text-xs font-bold text-gray-400 uppercase">Sem dados</p>
+                                ) : relatorioTurma.map((dia) => {
+                                  const dataObj = new Date(dia.dataISO + "T12:00:00");
+                                  const nomeDia = dataObj.toLocaleDateString("pt-BR", { weekday: "short" }).replace(".", "").toUpperCase();
+                                  const isSelected = diaSelecionado === dia.data;
+                                  return (
+                                    <li key={dia.data}>
+                                      <button
+                                        onClick={() => setDiaSelecionado(isSelected ? null : dia.data)}
+                                        className={`w-full text-left px-4 py-3 transition-colors ${isSelected ? "bg-[#00579D] text-white" : "hover:bg-blue-50 text-[#2B2B2B]"}`}
+                                      >
+                                        <p className={`font-black text-sm uppercase ${isSelected ? "text-white" : "text-[#2B2B2B]"}`}>{dia.data}</p>
+                                        <p className={`text-[10px] font-bold uppercase ${isSelected ? "text-blue-200" : "text-gray-400"}`}>
+                                          {nomeDia} · {dia.alunos.length} saída{dia.alunos.length !== 1 ? "s" : ""}
+                                        </p>
+                                      </button>
+                                    </li>
+                                  );
+                                })}
+                              </ul>
+                            </div>
+
+                            {/* COLUNA DIREITA: DETALHE DO DIA SELECIONADO */}
+                            <div className="flex-1 overflow-auto">
+                              {!diaSelecionado ? (
+                                <div className="flex flex-col items-center justify-center h-full py-16 text-center px-6">
+                                  <BarChart3 size={40} className="text-gray-200 mb-3"/>
+                                  <p className="text-sm font-bold text-gray-400 uppercase">Selecione um dia para ver o relatório completo da turma</p>
+                                </div>
+                              ) : (() => {
+                                const diaData = relatorioTurma.find(d => d.data === diaSelecionado);
+                                if (!diaData) return null;
+                                const dataObj = new Date(diaData.dataISO + "T12:00:00");
+                                const nomeDiaCompleto = dataObj.toLocaleDateString("pt-BR", { weekday: "long", day: "2-digit", month: "long", year: "numeric" });
+                                const totalMin = diaData.alunos.reduce((acc, a) => acc + a.tempoMin, 0);
+                                const mediaMin = diaData.alunos.length > 0 ? Math.round(totalMin / diaData.alunos.length) : 0;
+                                const alunosOrdenados = [...diaData.alunos].sort((a, b) => new Date(a.goTime).getTime() - new Date(b.goTime).getTime());
+                                const resumoAlunos = Object.values(diaData.resumoPorAluno).sort((a, b) => b.idas - a.idas);
                                 return (
-                                  <tr key={log.id} className="hover:bg-gray-50">
-                                    <td className="p-4 font-mono text-sm font-bold text-gray-600">{formatarHora(getEventTime(log))}</td>
-                                    <td className="p-4 font-extrabold text-[#2B2B2B] uppercase">{log.name}</td>
-                                    <td className="p-4"><span className={`px-3 py-1 font-bold text-[10px] uppercase tracking-wider ${badge.cor}`}>{badge.texto}</span></td>
-                                    <td className="p-4 text-xs font-bold text-gray-500 hidden sm:table-cell uppercase">{renderDetalhes(log)}</td>
-                                  </tr>
+                                  <div>
+                                    {/* Cabeçalho do dia */}
+                                    <div className="px-6 py-4 border-b-2 border-gray-200 bg-blue-50">
+                                      <p className="text-[10px] font-black uppercase text-[#00579D] tracking-widest mb-1">Relatório do Dia</p>
+                                      <p className="font-extrabold text-[#2B2B2B] uppercase text-sm capitalize">{nomeDiaCompleto}</p>
+                                      <div className="flex gap-6 mt-3">
+                                        <div className="text-center">
+                                          <p className="text-2xl font-black text-[#00579D]">{diaData.alunos.length}</p>
+                                          <p className="text-[10px] font-bold text-gray-500 uppercase">Saídas</p>
+                                        </div>
+                                        <div className="text-center">
+                                          <p className="text-2xl font-black text-[#2B2B2B]">{resumoAlunos.length}</p>
+                                          <p className="text-[10px] font-bold text-gray-500 uppercase">Alunos</p>
+                                        </div>
+                                        <div className="text-center">
+                                          <p className="text-2xl font-black text-gray-700">{totalMin}</p>
+                                          <p className="text-[10px] font-bold text-gray-500 uppercase">Min. Total</p>
+                                        </div>
+                                        <div className="text-center">
+                                          <p className="text-2xl font-black text-gray-500">{mediaMin}</p>
+                                          <p className="text-[10px] font-bold text-gray-500 uppercase">Média/Saída</p>
+                                        </div>
+                                      </div>
+                                    </div>
+
+                                    {/* RESUMO POR ALUNO */}
+                                    <div className="border-b-2 border-gray-200">
+                                      <div className="px-6 py-2 bg-gray-50 border-b border-gray-200">
+                                        <p className="text-[10px] font-black uppercase text-gray-400 tracking-widest">Resumo por Aluno</p>
+                                      </div>
+                                      <table className="w-full text-left border-collapse">
+                                        <thead className="bg-[#F4F4F4]">
+                                          <tr className="border-b-2 border-gray-200 text-[#2B2B2B] uppercase text-[10px]">
+                                            <th className="px-6 py-2 font-black">Aluno</th>
+                                            <th className="px-6 py-2 font-black text-center">Idas</th>
+                                            <th className="px-6 py-2 font-black text-center">Total</th>
+                                            <th className="px-6 py-2 font-black text-right">Média</th>
+                                          </tr>
+                                        </thead>
+                                        <tbody className="divide-y divide-gray-100">
+                                          {resumoAlunos.map((aluno, idx) => {
+                                            const media = Math.round(aluno.tempoTotal / aluno.idas);
+                                            const excedeuMedia = media >= (turmaAtiva.time_limit_minutes || 15);
+                                            return (
+                                              <tr key={idx} className={excedeuMedia ? "bg-red-50" : "hover:bg-gray-50"}>
+                                                <td className="px-6 py-2">
+                                                  <p className={`font-extrabold uppercase text-xs ${excedeuMedia ? "text-red-700" : "text-[#2B2B2B]"}`}>{aluno.name}</p>
+                                                </td>
+                                                <td className="px-6 py-2 text-center">
+                                                  <span className="font-black text-sm text-[#00579D]">{aluno.idas}</span>
+                                                </td>
+                                                <td className="px-6 py-2 text-center">
+                                                  <span className="font-bold text-xs text-gray-700">{aluno.tempoTotal} min</span>
+                                                </td>
+                                                <td className="px-6 py-2 text-right">
+                                                  <span className={`font-black text-xs ${excedeuMedia ? "text-red-600" : "text-gray-500"}`}>{media} min</span>
+                                                </td>
+                                              </tr>
+                                            );
+                                          })}
+                                        </tbody>
+                                      </table>
+                                    </div>
+
+                                    {/* CRONOLOGIA DO DIA */}
+                                    <div>
+                                      <div className="px-6 py-2 bg-gray-50 border-b border-gray-200">
+                                        <p className="text-[10px] font-black uppercase text-gray-400 tracking-widest">Cronologia das Saídas</p>
+                                      </div>
+                                      <table className="w-full text-left border-collapse">
+                                        <thead className="sticky top-0 bg-[#F4F4F4]">
+                                          <tr className="border-b-2 border-gray-200 text-[#2B2B2B] uppercase text-[10px]">
+                                            <th className="px-6 py-3 font-black">Aluno</th>
+                                            <th className="px-6 py-3 font-black">Saída</th>
+                                            <th className="px-6 py-3 font-black">Retorno</th>
+                                            <th className="px-6 py-3 font-black text-right">Tempo</th>
+                                          </tr>
+                                        </thead>
+                                        <tbody className="divide-y divide-gray-100">
+                                          {alunosOrdenados.map((aluno, idx) => {
+                                            const excedeu = aluno.tempoMin >= (turmaAtiva.time_limit_minutes || 15);
+                                            return (
+                                              <tr key={idx} className={`${excedeu ? "bg-red-50" : "hover:bg-gray-50"}`}>
+                                                <td className="px-6 py-3">
+                                                  <p className={`font-extrabold uppercase text-xs ${excedeu ? "text-red-700" : "text-[#2B2B2B]"}`}>{aluno.name}</p>
+                                                  {excedeu && <p className="text-[10px] font-bold text-red-500 uppercase flex items-center gap-1 mt-0.5"><ShieldAlert size={10}/> Excedeu o limite</p>}
+                                                </td>
+                                                <td className="px-6 py-3 font-mono text-xs font-bold text-gray-600">{formatarHora(aluno.goTime)}</td>
+                                                <td className="px-6 py-3 font-mono text-xs font-bold text-gray-600">{formatarHora(aluno.backTime)}</td>
+                                                <td className="px-6 py-3 text-right">
+                                                  <span className={`font-black text-sm ${excedeu ? "text-red-600" : "text-[#00579D]"}`}>{aluno.tempoMin} min</span>
+                                                </td>
+                                              </tr>
+                                            );
+                                          })}
+                                        </tbody>
+                                      </table>
+                                    </div>
+                                  </div>
                                 );
-                              })
-                            )}
-                          </tbody>
-                        </table>
-                      </div>
+                              })()}
+                            </div>
+                          </div>
+                        );
+                      })()}
+
                     </div>
                   )}
                 </section>
