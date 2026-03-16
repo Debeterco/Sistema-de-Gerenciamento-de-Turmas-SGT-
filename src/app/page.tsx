@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef } from "react";
 import { supabase } from "@/lib/supabase";
+import { createClient } from "@supabase/supabase-js";
 import { 
   UserPlus, CheckCircle2, LogOut, 
   DoorOpen, PauseCircle, PlayCircle, Trash2, ArrowUp, ArrowDown, ShieldAlert,
@@ -56,6 +57,47 @@ export default function Home() {
   const [alunoSelecionadoFila, setAlunoSelecionadoFila] = useState("");
   
   const [isStatsExpanded, setIsStatsExpanded] = useState(false);
+
+  const isPrivileged = currentUser?.acess_level === "Teacher" || currentUser?.acess_level === "admin";
+  const isAdmin = currentUser?.acess_level === "admin";
+
+  useEffect(() => { verificarLogin(); }, []);
+
+  const processingRef = useRef(false);
+  const router = useRouter();
+
+  type ViewMode = "dashboard" | "settings" | "queue" | "no_class" | "admin_panel";
+  const [viewMode, setViewMode] = useState<ViewMode>("dashboard");
+  
+  const [turmas, setTurmas] = useState<Classroom[]>([]);
+  const [novaTurmaNome, setNovaTurmaNome] = useState("");
+  const [turmaAtiva, setTurmaAtiva] = useState<Classroom | null>(null);
+  
+  const [alunosSemTurma, setAlunosSemTurma] = useState<UserDB[]>([]);
+  const [alunosNaTurmaAtual, setAlunosNaTurmaAtual] = useState<UserDB[]>([]);
+  const [professoresNaTurmaAtual, setProfessoresNaTurmaAtual] = useState<UserDB[]>([]);
+  const [todosProfessores, setTodosProfessores] = useState<UserDB[]>([]);
+  const [alunoParaAdicionar, setAlunoParaAdicionar] = useState("");
+  const [professorParaAdicionar, setProfessorParaAdicionar] = useState("");
+  const [alunoSelecionadoFila, setAlunoSelecionadoFila] = useState("");
+  
+  const [todosUsuarios, setTodosUsuarios] = useState<UserDB[]>([]);
+  const [logsAuditoria, setLogsAuditoria] = useState<LogPedido[]>([]);
+  
+  const [novoUserNome, setNovoUserNome] = useState("");
+  const [novoUserEmail, setNovoUserEmail] = useState("");
+  const [novoUserSenha, setNovoUserSenha] = useState("");
+  const [novoUserCargo, setNovoUserCargo] = useState("aluno");
+
+  const [isStatsExpanded, setIsStatsExpanded] = useState(false);
+  const [isHistoricoOpen, setIsHistoricoOpen] = useState(false); 
+
+  // ================= NOVOS ESTADOS PARA BUSCA E FILTROS =================
+  const [buscaTurmas, setBuscaTurmas] = useState("");
+  const [buscaUsuarios, setBuscaUsuarios] = useState("");
+  const [usuariosSelecionados, setUsuariosSelecionados] = useState<string[]>([]);
+  const [filtroAuditoria, setFiltroAuditoria] = useState("");
+  const [filtroHistorico, setFiltroHistorico] = useState("");
 
   const isPrivileged = currentUser?.acess_level === "Teacher" || currentUser?.acess_level === "admin";
   const isAdmin = currentUser?.acess_level === "admin";
@@ -369,6 +411,7 @@ export default function Home() {
       }))
       .sort((a, b) => b.idas - a.idas);
   };
+  const rankingSala = gerarRankingDaSala();
 
   const rankingSala = gerarRankingDaSala();
 
@@ -404,6 +447,9 @@ export default function Home() {
       <div className="text-xl font-bold text-[#00579D] uppercase tracking-widest animate-pulse">Carregando Sistema...</div>
     </div>
   );
+  const auditoriaVisivel = logsAuditoria.filter(log => log.name.toLowerCase().includes(filtroAuditoria.toLowerCase()));
+  const turmasVisiveisList = turmas.filter(t => t.name.toLowerCase().includes(buscaTurmas.toLowerCase()));
+  const historicoVisivel = historicoDaTurma.filter(log => log.name.toLowerCase().includes(filtroHistorico.toLowerCase()));
 
   return (
     <main className="min-h-screen flex flex-col bg-[#F4F4F4] font-sans text-[#2B2B2B]">
