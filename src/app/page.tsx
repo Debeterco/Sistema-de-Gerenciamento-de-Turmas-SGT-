@@ -244,6 +244,7 @@ export default function Home() {
 
   useEffect(() => { verificarLogin(); }, []);
 
+  // Substitua o useEffect do realtime atual por este:
   useEffect(() => {
     if (!currentUser) return;
 
@@ -251,7 +252,38 @@ export default function Home() {
       .on(
         "postgres_changes", 
         { event: "*", schema: "public", table: "logs" },
-        () => { carregarDados(currentUser); }
+        (payload) => {
+            const logModificado = payload.new as LogPedido;
+            
+            if (payload.eventType === 'INSERT') {
+                // Adiciona o novo log na tela instantaneamente, sem consultar o banco!
+                setTodosLogsAtivos((prev) => {
+                    if (["pedido", "saida", "pausado"].includes(logModificado.status)) {
+                        return [logModificado, ...prev];
+                    }
+                    return prev;
+                });
+                setHistoricoCompleto((prev) => [logModificado, ...prev]);
+            }
+
+            if (payload.eventType === 'UPDATE') {
+                setTodosLogsAtivos((prev) => {
+                    // Atualiza o card de quem mudou de status (ex: pedido -> saida)
+                    const listaSemOAntigo = prev.filter(p => p.id !== logModificado.id);
+                    if (["pedido", "saida", "pausado"].includes(logModificado.status)) {
+                         return [logModificado, ...listaSemOAntigo];
+                    }
+                    return listaSemOAntigo;
+                });
+                setHistoricoCompleto((prev) => prev.map(p => p.id === logModificado.id ? { ...p, ...logModificado } : p));
+            }
+
+            if (payload.eventType === 'DELETE') {
+                const logDeletado = payload.old as LogPedido;
+                setTodosLogsAtivos((prev) => prev.filter(p => p.id !== logDeletado.id));
+                setHistoricoCompleto((prev) => prev.filter(p => p.id !== logDeletado.id));
+            }
+        }
       )
       .on(
         "postgres_changes", 
@@ -609,40 +641,107 @@ export default function Home() {
       }
 
       registrarAuditoria(isPaused ? "Liberou a fila" : "Pausou a fila");
-      await carregarDados(currentUser);
     } finally { processingRef.current = false; setIsProcessing(false); }
+  };
+
+// ================= LÓGICA DE COOLDOWN (TEMPO DE ESPERA) =================
+  const TEMPO_COOLDOWN_MINUTOS = 30; 
+
+  const getTempoEsperaRestante = (userId: string) => {
+    const ultimoLog = historicoCompleto.find(
+      log => log.user_id === userId && log.status === "concluido" && log.back_time
+    );
+    
+    if (!ultimoLog || !ultimoLog.back_time) return 0; 
+    const tempoVolta = new Date(ultimoLog.back_time).getTime();
+    const agora = new Date().getTime();
+    const diferencaMinutos = (agora - tempoVolta) / 60000;
+    
+    if (diferencaMinutos < TEMPO_COOLDOWN_MINUTOS) {
+      return Math.ceil(TEMPO_COOLDOWN_MINUTOS - diferencaMinutos);
+    }
+    return 0;
   };
 
   const requisitar = async () => {
-    if (!currentUser || processingRef.current || meuPedido) return; 
-    processingRef.current = true; setIsProcessing(true);
+    if (!currentUser || processingRef.current || meuPedido) return;
+
+    // 1. CHECAGEM DE COOLDOWN
+    const tempoRestante = getTempoEsperaRestante(currentUser.user_id);
+    if (tempoRestante > 0) {
+      alert(`Você concluiu um ciclo recentemente! Aguarde mais ${tempoRestante} minutos para pedir novamente.`);
+      return;
+    }
+
+    processingRef.current = true;
+    setIsProcessing(true);
     try {
       const { data: jaExiste } = await supabase.from("logs").select("id").eq("user_id", currentUser.user_id).in("status", ["pedido", "saida"]);
       if (jaExiste && jaExiste.length > 0) return;
+
+      // 2. INTERFACE OTIMISTA: Adiciona o aluno na tela no exato milissegundo do clique
+      const logOtimista: LogPedido = {
+        id: "temp-" + Date.now(), // ID temporário apenas para a tela
+        user_id: currentUser.user_id,
+        name: currentUser.name,
+        status: "pedido",
+        require_time: new Date().toISOString(),
+        go_time: null,
+        back_time: null,
+        description: null
+      };
+      setTodosLogsAtivos(prev => [logOtimista, ...prev]);
+
+      // 3. Salva no banco em segundo plano silenciosamente
       await supabase.from("logs").insert([{ user_id: currentUser.user_id, name: currentUser.name, status: "pedido" }]);
-      await carregarDados(currentUser);
-    } finally { processingRef.current = false; setIsProcessing(false); }
+      
+    } finally { 
+      processingRef.current = false; 
+      setIsProcessing(false); 
+    }
   };
 
-  const registrarSaida = async (pedido: LogPedido) => {
-    if (processingRef.current) return;
-    processingRef.current = true; setIsProcessing(true);
+  const registrarSaida = async () => {
+    // Bloqueia se já estiver processando ou se não tiver um pedido na fila
+    if (!currentUser || processingRef.current || !meuPedido || meuPedido.status !== "pedido") return;
+
+    processingRef.current = true;
+    setIsProcessing(true);
     try {
-      await supabase.from("logs").update({ status: "pedido_historico" }).eq("id", pedido.id);
-      await supabase.from("logs").insert([{ user_id: pedido.user_id, name: pedido.name, status: "saida", require_time: pedido.require_time, go_time: new Date().toISOString(), description: pedido.description }]);
-      if(isPrivileged) registrarAuditoria(`Liberou saída manual do aluno ${pedido.name}`);
-      await carregarDados(currentUser);
-    } finally { processingRef.current = false; setIsProcessing(false); }
+      const agora = new Date().toISOString();
+      
+      setTodosLogsAtivos(prev => prev.map(p => 
+        p.id === meuPedido.id ? { ...p, status: "saida", go_time: agora } : p
+      ));
+
+      await supabase.from("logs").update({ status: "saida", go_time: agora }).eq("id", meuPedido.id);
+      
+    } finally {
+      processingRef.current = false;
+      setIsProcessing(false);
+    }
   };
 
-  const registrarChegada = async (pedido: LogPedido) => {
-    if (processingRef.current) return;
-    processingRef.current = true; setIsProcessing(true);
+  const registrarChegada = async () => {
+    if (!currentUser || processingRef.current || !meuPedido || !meuPedido.status.includes("saida")) return;
+
+    processingRef.current = true;
+    setIsProcessing(true);
     try {
-      await supabase.from("logs").update({ status: "saida_historico" }).eq("id", pedido.id);
-      await supabase.from("logs").insert([{ user_id: pedido.user_id, name: pedido.name, status: "concluido", require_time: pedido.require_time, go_time: pedido.go_time, back_time: new Date().toISOString(), description: pedido.description }]);
-      await carregarDados(currentUser);
-    } finally { processingRef.current = false; setIsProcessing(false); }
+      const agora = new Date().toISOString();
+      
+      setTodosLogsAtivos(prev => prev.filter(p => p.id !== meuPedido.id));
+      
+      setHistoricoCompleto(prev => prev.map(p => 
+        p.id === meuPedido.id ? { ...p, status: "concluido", back_time: agora } : p
+      ));
+
+      await supabase.from("logs").update({ status: "concluido", back_time: agora }).eq("id", meuPedido.id);
+      
+    } finally {
+      processingRef.current = false;
+      setIsProcessing(false);
+    }
   };
 
   const adicionarAlunoManualmenteFila = async () => {
@@ -662,14 +761,23 @@ export default function Home() {
   };
 
   const forcarSaidaAluno = async (pedidoAntigo: LogPedido) => {
-    if (processingRef.current || !currentUser) return;
-    processingRef.current = true; setIsProcessing(true);
+    if (processingRef.current) return;
+    
+    processingRef.current = true;
+    setIsProcessing(true);
     try {
-      await supabase.from("logs").update({ status: "pedido_historico" }).eq("id", pedidoAntigo.id);
-      await supabase.from("logs").insert([{ user_id: pedidoAntigo.user_id, name: pedidoAntigo.name, status: "saida", require_time: pedidoAntigo.require_time, go_time: new Date().toISOString(), description: ((pedidoAntigo.description || "") + ` (Forçada por: ${currentUser.name})`).trim() }]);
-      criarLogAuditoria(`Forçou a saída do aluno ${pedidoAntigo.name}`);
-      await carregarDados(currentUser);
-    } finally { processingRef.current = false; setIsProcessing(false); }
+      const agora = new Date().toISOString();
+      
+      setTodosLogsAtivos(prev => prev.map(p => 
+        p.id === pedidoAntigo.id ? { ...p, status: "saida", go_time: agora } : p
+      ));
+
+      await supabase.from("logs").update({ status: "saida", go_time: agora }).eq("id", pedidoAntigo.id);
+      
+    } finally {
+      processingRef.current = false;
+      setIsProcessing(false);
+    }
   };
 
   const forcarRetornoAluno = async (pedido: LogPedido) => {
@@ -683,19 +791,20 @@ export default function Home() {
     } finally { processingRef.current = false; setIsProcessing(false); }
   };
 
-  const cancelarPedido = async (pedido: LogPedido) => {
-    if(processingRef.current) return;
-    processingRef.current = true; setIsProcessing(true);
-    try { 
-      await supabase.from("logs").update({ status: "cancelado", description: "Cancelado / Removido" }).eq("id", pedido.id); 
-      if(isPrivileged && currentUser?.user_id !== pedido.user_id) {
-        criarLogAuditoria(`Removeu/Cancelou o registro de ${pedido.name}`);
-      }
-
-      if(isPrivileged) registrarAuditoria(`Removeu da fila ou cancelou o pedido de ${pedido.name}`);
-      await carregarDados(currentUser);
+  const cancelarPedido = async (id: string = meuPedido?.id || "") => {
+    if (!id || processingRef.current) return;
+    
+    processingRef.current = true;
+    setIsProcessing(true);
+    try {
+      setTodosLogsAtivos(prev => prev.filter(p => p.id !== id));
+      
+      await supabase.from("logs").delete().eq("id", id);
+      
+    } finally {
+      processingRef.current = false;
+      setIsProcessing(false);
     }
-    finally { processingRef.current = false; setIsProcessing(false); }
   };
 
   const moverPosicao = async (index: number, direcao: "up" | "down") => {
