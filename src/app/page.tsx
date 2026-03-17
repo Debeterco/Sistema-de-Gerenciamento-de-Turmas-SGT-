@@ -88,6 +88,7 @@ export default function Home() {
   const [novoUserCargo, setNovoUserCargo] = useState("aluno");
 
   const [isStatsExpanded, setIsStatsExpanded] = useState(false);
+  const [is5sOpen, setIs5sOpen] = useState(false);
   // ================= LÓGICA DO 5S =================
 
   const alterarQtd5S = async (novaQtd: number) => {
@@ -341,7 +342,7 @@ export default function Home() {
     setTurmaAtiva(turma);
     setIsProcessing(true);
     try {
-      const { data: todosAlunos } = await supabase.from("users").select("*").in("acess_level", ["aluno", "Student"]);
+      const { data: todosAlunos } = await supabase.from("users").select("user_id, name, acess_level").in("acess_level", ["aluno", "Student"]);
       const { data: listaTodosProfs } = await supabase.from("users").select("*").eq("acess_level", "Teacher");
       const { data: vinculosAlunos } = await supabase.from("user_classrooms").select("user_id, classroom_id");
       const { data: vinculosProfs } = await supabase.from("classroom_teachers").select("user_id").eq("classroom_id", turma.id);
@@ -526,20 +527,39 @@ export default function Home() {
   // LÓGICA DA FILA DA SALA
   // ====================================================
   const carregarDados = async (usuario: UserDB | null = currentUser) => {
+    // CORREÇÃO 1: Checar o parâmetro 'usuario' em vez do state global
     if (!usuario) return;
-    const { data } = await supabase.from("logs").select("*, users(acess_level)");
+
+    const hoje = new Date();
+    hoje.setHours(0, 0, 0, 0);
+    const inicioDoDiaISO = hoje.toISOString();
+
+    const { data } = await supabase
+      .from("logs")
+      .select("id, user_id, name, status, require_time, go_time, back_time, description, users(acess_level)")
+      .or(`require_time.gte.${inicioDoDiaISO},status.in.(pedido,saida,pausado)`);
+
     if (data) {
-      setTodosLogsAtivos(data.filter((p) => ["pedido", "saida", "pausado"].includes(p.status)).reverse());
+      // CORREÇÃO 2: Garantir pro TypeScript que os dados são do tipo LogPedido[]
+      const logsData = data as unknown as LogPedido[];
+
+      setTodosLogsAtivos(logsData.filter((p) => ["pedido", "saida", "pausado"].includes(p.status)).reverse());
+
       const getActionTime = (log: LogPedido) => {
         if (log.status.includes('saida')) return new Date(log.go_time || log.require_time).getTime();
         if (log.status === 'concluido') return new Date(log.back_time || log.require_time).getTime();
         return new Date(log.require_time).getTime();
       };
-      const logsOrdenados = data.sort((a, b) => getActionTime(b) - getActionTime(a));
 
-      if (usuario.acess_level === "admin") setHistoricoCompleto(logsOrdenados.filter(l => l.status !== "auditoria"));
-      else if (usuario.acess_level === "Teacher") setHistoricoCompleto(logsOrdenados.filter((log) => log.status !== "auditoria" && (log.users?.acess_level === "aluno" || log.users?.acess_level === "Student")));
-      else setHistoricoCompleto([]);
+      const logsOrdenados = logsData.sort((a, b) => getActionTime(b) - getActionTime(a));
+
+      if (usuario.acess_level === "admin") {
+        setHistoricoCompleto(logsOrdenados.filter(l => l.status !== "auditoria"));
+      } else if (usuario.acess_level === "Teacher") {
+        setHistoricoCompleto(logsOrdenados.filter((log) => log.status !== "auditoria" && (log.users?.acess_level === "aluno" || log.users?.acess_level === "Student")));
+      } else {
+        setHistoricoCompleto([]);
+      }
     }
   };
 
@@ -589,6 +609,7 @@ export default function Home() {
       }
 
       registrarAuditoria(isPaused ? "Liberou a fila" : "Pausou a fila");
+      await carregarDados(currentUser);
     } finally { processingRef.current = false; setIsProcessing(false); }
   };
 
@@ -599,6 +620,7 @@ export default function Home() {
       const { data: jaExiste } = await supabase.from("logs").select("id").eq("user_id", currentUser.user_id).in("status", ["pedido", "saida"]);
       if (jaExiste && jaExiste.length > 0) return;
       await supabase.from("logs").insert([{ user_id: currentUser.user_id, name: currentUser.name, status: "pedido" }]);
+      await carregarDados(currentUser);
     } finally { processingRef.current = false; setIsProcessing(false); }
   };
 
@@ -609,6 +631,7 @@ export default function Home() {
       await supabase.from("logs").update({ status: "pedido_historico" }).eq("id", pedido.id);
       await supabase.from("logs").insert([{ user_id: pedido.user_id, name: pedido.name, status: "saida", require_time: pedido.require_time, go_time: new Date().toISOString(), description: pedido.description }]);
       if(isPrivileged) registrarAuditoria(`Liberou saída manual do aluno ${pedido.name}`);
+      await carregarDados(currentUser);
     } finally { processingRef.current = false; setIsProcessing(false); }
   };
 
@@ -618,6 +641,7 @@ export default function Home() {
     try {
       await supabase.from("logs").update({ status: "saida_historico" }).eq("id", pedido.id);
       await supabase.from("logs").insert([{ user_id: pedido.user_id, name: pedido.name, status: "concluido", require_time: pedido.require_time, go_time: pedido.go_time, back_time: new Date().toISOString(), description: pedido.description }]);
+      await carregarDados(currentUser);
     } finally { processingRef.current = false; setIsProcessing(false); }
   };
 
@@ -633,6 +657,7 @@ export default function Home() {
       await supabase.from("logs").insert([{ user_id: aluno.user_id, name: aluno.name, status: "pedido", description: `(Adicionado por: ${currentUser.name})` }]);
       criarLogAuditoria(`Adicionou ${aluno.name} na fila da sala ${turmaAtiva?.name}`);
       setAlunoSelecionadoFila("");
+      await carregarDados(currentUser);
     } finally { processingRef.current = false; setIsProcessing(false); }
   };
 
@@ -643,6 +668,7 @@ export default function Home() {
       await supabase.from("logs").update({ status: "pedido_historico" }).eq("id", pedidoAntigo.id);
       await supabase.from("logs").insert([{ user_id: pedidoAntigo.user_id, name: pedidoAntigo.name, status: "saida", require_time: pedidoAntigo.require_time, go_time: new Date().toISOString(), description: ((pedidoAntigo.description || "") + ` (Forçada por: ${currentUser.name})`).trim() }]);
       criarLogAuditoria(`Forçou a saída do aluno ${pedidoAntigo.name}`);
+      await carregarDados(currentUser);
     } finally { processingRef.current = false; setIsProcessing(false); }
   };
 
@@ -653,6 +679,7 @@ export default function Home() {
       await supabase.from("logs").update({ status: "saida_historico" }).eq("id", pedido.id);
       await supabase.from("logs").insert([{ user_id: pedido.user_id, name: pedido.name, status: "concluido", require_time: pedido.require_time, go_time: pedido.go_time, back_time: new Date().toISOString(), description: ((pedido.description || "") + ` (Retorno forçado por: ${currentUser?.name})`).trim() }]);
       criarLogAuditoria(`Forçou o retorno do aluno ${pedido.name}`);
+      await carregarDados(currentUser);
     } finally { processingRef.current = false; setIsProcessing(false); }
   };
 
@@ -666,6 +693,7 @@ export default function Home() {
       }
 
       if(isPrivileged) registrarAuditoria(`Removeu da fila ou cancelou o pedido de ${pedido.name}`);
+      await carregarDados(currentUser);
     }
     finally { processingRef.current = false; setIsProcessing(false); }
   };
@@ -684,6 +712,7 @@ export default function Home() {
       await supabase.from("logs").update({ description: newDescAtual.trim() }).eq("id", atual.id);
       await supabase.from("logs").update({ description: newDescOutro.trim() }).eq("id", outro.id);
       criarLogAuditoria(`Alterou a posição de ${atual.name} e ${outro.name} na fila`);
+      await carregarDados(currentUser);
     } finally { processingRef.current = false; setIsProcessing(false); }
   };
 
@@ -1574,22 +1603,25 @@ export default function Home() {
           </div>
           {/* PAINEL RETRÁTIL DO 5S (DIREITA) */}
             {/* PAINEL RETRÁTIL DO 5S (DIREITA) COM HISTÓRICO E PULO */}
-            <div className="fixed right-0 top-[30%] z-50 flex items-start group">
-              <div className="bg-[#00579D] text-white p-2 rounded-l-lg shadow-lg cursor-pointer flex items-center justify-center min-h-[120px] border-y-2 border-l-2 border-[#2B2B2B]">
+            <div className="fixed right-0 top-[30%] z-50 flex items-start">
+              <div
+                onClick={() => setIs5sOpen(!is5sOpen)}
+                className="bg-[#00579D] text-white p-2 rounded-l-lg shadow-lg cursor-pointer flex items-center justify-center min-h-[120px] border-y-2 border-l-2 border-[#2B2B2B] select-none"
+              >
                 <span className="font-extrabold uppercase tracking-widest text-lg [writing-mode:vertical-lr] rotate-180">
                   ESCALA 5S
                 </span>
               </div>
               
-              <div className="w-0 overflow-hidden bg-white group-hover:w-[350px] transition-all duration-300 ease-in-out shadow-2xl border-y-2 border-[#2B2B2B] -ml-1 h-auto min-h-[120px] flex flex-col max-h-[80vh]">
+              <div className={`overflow-hidden bg-white transition-all duration-300 ease-in-out shadow-2xl border-y-2 border-[#2B2B2B] -ml-1 flex flex-col max-h-[80vh] ${is5sOpen ? 'w-[350px]' : 'w-0'}`}>
                 
                 {/* Abas Superiores */}
-                <div className="flex border-b-2 border-gray-200 bg-gray-50">
+                <div className="flex border-b-2 border-gray-200 bg-gray-50 shrink-0">
                   <button onClick={() => setMostrarHistorico5S(false)} className={`flex-1 py-3 font-bold uppercase text-xs tracking-widest ${!mostrarHistorico5S ? "bg-[#00579D] text-white" : "text-gray-500 hover:bg-gray-200"}`}>Hoje</button>
                   <button onClick={() => setMostrarHistorico5S(true)} className={`flex-1 py-3 font-bold uppercase text-xs tracking-widest ${mostrarHistorico5S ? "bg-[#00579D] text-white" : "text-gray-500 hover:bg-gray-200"}`}>Histórico</button>
                 </div>
 
-                <div className="p-5 w-[350px] overflow-y-auto">
+                <div className="p-5 w-[350px] overflow-y-auto flex-1">
                   
                   {!mostrarHistorico5S ? (
                     <>
@@ -1625,12 +1657,6 @@ export default function Home() {
                         ))}
                         {alunosPara5S().length === 0 && <p className="text-sm text-gray-500 text-center font-bold">Ninguém disponível.</p>}
                       </ul>
-
-                      {isPrivileged && alunosPara5S().length > 0 && (
-                        <button onClick={confirmar5S} disabled={isProcessing} className="w-full bg-green-600 text-white font-bold uppercase py-3 hover:bg-green-700 shadow-md text-xs tracking-widest flex items-center justify-center gap-2 border-b-4 border-green-800 active:border-b-0 active:translate-y-1">
-                          <CheckCircle2 size={16}/> Confirmar e Liberar
-                        </button>
-                      )}
                     </>
                   ) : (
                     <>
@@ -1649,6 +1675,15 @@ export default function Home() {
                     </>
                   )}
                 </div>
+
+                {/* Botão verde FIXO na base do painel, fora da área scrollável */}
+                {isPrivileged && !mostrarHistorico5S && alunosPara5S().length > 0 && (
+                  <div className="shrink-0 p-3 border-t-2 border-gray-200 bg-white w-[350px]">
+                    <button onClick={confirmar5S} disabled={isProcessing} className="w-full bg-green-600 text-white font-bold uppercase py-3 hover:bg-green-700 shadow-md text-xs tracking-widest flex items-center justify-center gap-2 border-b-4 border-green-800 active:border-b-0 active:translate-y-1">
+                      <CheckCircle2 size={16}/> Confirmar e Liberar
+                    </button>
+                  </div>
+                )}
               </div>
             </div>
             </>
