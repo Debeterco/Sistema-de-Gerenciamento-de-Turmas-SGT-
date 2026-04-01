@@ -7,7 +7,7 @@ import {
   UserPlus, CheckCircle2, LogOut,
   DoorOpen, PauseCircle, PlayCircle, Trash2, ShieldAlert,
   ClipboardList, XCircle, BookOpen, Users, Plus, Settings, LayoutGrid, BarChart3, Shield,
-  ArrowUp, ArrowDown, ChevronDown, ChevronUp, Search, Timer
+  ArrowUp, ArrowDown, ChevronDown, ChevronUp, Search, Timer, ArrowLeft, ChevronsDown
 } from "lucide-react";
 import { useRouter } from "next/navigation";
 
@@ -32,6 +32,8 @@ export default function Home() {
   const [logsConcluidosHoje, setLogsConcluidosHoje] = useState<{ user_id: string; name: string }[]>([]);
 
   const processingRef = useRef(false);
+  // useState em vez de useRef — garante re-render imediato para desabilitar o botão no primeiro clique
+  const [chegadaEmProcesso, setChegadaEmProcesso] = useState<Set<string>>(new Set());
   const realtimeDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Ref sempre atualizada — evita closure stale no realtime
   const currentUserRef = useRef<UserDB | null>(null);
@@ -180,7 +182,17 @@ export default function Home() {
 
       setLogsConcluidosHoje((concluidosHoje || []) as { user_id: string; name: string }[]);
 
-      setHistoricoCompleto([]);
+      // Histórico 5S: alunos também precisam ver — busca separada
+      const trintaDiasAtras5s = new Date();
+      trintaDiasAtras5s.setDate(trintaDiasAtras5s.getDate() - 30);
+      const { data: hist5s } = await supabase
+        .from("logs")
+        .select("id, user_id, name, status, require_time, go_time, back_time, description")
+        .eq("status", "5s_history")
+        .gte("require_time", trintaDiasAtras5s.toISOString())
+        .order("require_time", { ascending: false })
+        .limit(50);
+      setHistoricoCompleto((hist5s || []) as LogPedido[]);
       return;
     }
 
@@ -661,20 +673,41 @@ export default function Home() {
   };
 
   const registrarChegada = async (pedido: LogPedido) => {
-    if (processingRef.current) return; processingRef.current = true; setIsProcessing(true);
+    // Camada 1: state dispara re-render imediato — botão fica disabled antes de qualquer await
+    if (processingRef.current) return;
+    if (chegadaEmProcesso.has(pedido.id)) return;
+    setChegadaEmProcesso(prev => new Set(prev).add(pedido.id));
+    processingRef.current = true; setIsProcessing(true);
     const backNow = new Date().toISOString();
-    // Optimistic: remove da lista ativa (vai para histórico)
+    // Optimistic: remove da lista ativa imediatamente
     setTodosLogsAtivos(prev => prev.filter(l => l.id !== pedido.id));
     // Atualiza cooldown localmente imediatamente
     setUltimoRetornoDoAluno({ ...pedido, status: "concluido", back_time: backNow });
     try {
+      // Camada 2: guard no banco — confirma que o log ainda está como "saida"
+      const { data: logAtual } = await supabase
+        .from("logs")
+        .select("id, status")
+        .eq("id", pedido.id)
+        .maybeSingle();
+
+      if (!logAtual || logAtual.status !== "saida") {
+        // Já foi processado — apenas mantém a UI limpa
+        return;
+      }
+
       await Promise.all([
         supabase.from("logs").update({ status: "saida_historico" }).eq("id", pedido.id),
         supabase.from("logs").insert([{ user_id: pedido.user_id, name: pedido.name, status: "concluido", require_time: pedido.require_time, go_time: pedido.go_time, back_time: backNow, description: pedido.description }]),
       ]);
     } catch {
+      // Rollback: devolve o log ativo se algo falhou
       setTodosLogsAtivos(prev => [pedido, ...prev]);
-    } finally { processingRef.current = false; setIsProcessing(false); }
+      setUltimoRetornoDoAluno(null);
+    } finally {
+      setChegadaEmProcesso(prev => { const s = new Set(prev); s.delete(pedido.id); return s; });
+      processingRef.current = false; setIsProcessing(false);
+    }
   };
 
   const adicionarAlunoManualmenteFila = async () => {
@@ -746,6 +779,21 @@ export default function Home() {
         supabase.from("logs").update({ description: ((atual.description || "").replace(/\[OVERRIDE:.*?\]/g, "") + ` [OVERRIDE:${getEffectiveTime(outro)}]`).trim() }).eq("id", atual.id),
         supabase.from("logs").update({ description: ((outro.description || "").replace(/\[OVERRIDE:.*?\]/g, "") + ` [OVERRIDE:${getEffectiveTime(atual)}]`).trim() }).eq("id", outro.id),
         supabase.from("logs").insert([{ user_id: currentUser.user_id, name: currentUser.name, status: "auditoria", description: `Alterou a posição de ${atual.name} e ${outro.name} na fila` }]),
+      ]);
+    } finally { processingRef.current = false; setIsProcessing(false); }
+  };
+
+  const darMinhaVez = async () => {
+    if (processingRef.current || !currentUser || !meuPedido) return;
+    const meuIndex = filaEsperaOrdenada.findIndex(p => p.id === meuPedido.id);
+    if (meuIndex < 0 || meuIndex >= filaEsperaOrdenada.length - 1) return;
+    processingRef.current = true; setIsProcessing(true);
+    try {
+      const proximo = filaEsperaOrdenada[meuIndex + 1];
+      await Promise.all([
+        supabase.from("logs").update({ description: ((meuPedido.description || "").replace(/\[OVERRIDE:.*?\]/g, "") + ` [OVERRIDE:${getEffectiveTime(proximo)}]`).trim() }).eq("id", meuPedido.id),
+        supabase.from("logs").update({ description: ((proximo.description || "").replace(/\[OVERRIDE:.*?\]/g, "") + ` [OVERRIDE:${getEffectiveTime(meuPedido)}]`).trim() }).eq("id", proximo.id),
+        supabase.from("logs").insert([{ user_id: currentUser.user_id, name: currentUser.name, status: "auditoria", description: `${currentUser.name} cedeu sua vez para ${proximo.name} na fila` }]),
       ]);
     } finally { processingRef.current = false; setIsProcessing(false); }
   };
@@ -907,6 +955,7 @@ export default function Home() {
           <div className="animate-in fade-in slide-in-from-bottom-4 duration-500 space-y-10">
             <div className="flex justify-between items-center border-b-4 border-purple-600 pb-4 mb-8">
               <h2 className="text-2xl font-extrabold uppercase tracking-widest flex items-center gap-2 text-purple-700"><Shield size={28} /> Painel de Administração Geral</h2>
+              <button onClick={() => { carregarDashboard(); setViewMode("dashboard"); }} className="flex items-center gap-2 bg-white text-purple-700 border-2 border-purple-600 px-4 py-2 font-bold uppercase text-xs hover:bg-purple-50 transition-colors"><ArrowLeft size={16} />Voltar</button>
             </div>
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
               <section className="bg-white shadow-md border-t-8 border-purple-600 lg:col-span-1 h-fit">
@@ -989,7 +1038,10 @@ export default function Home() {
             <div className="bg-white border-2 border-[#2B2B2B] shadow-md">
               <div className="bg-[#2B2B2B] text-white px-6 py-4 flex justify-between items-center">
                 <h2 className="text-xl font-extrabold uppercase tracking-widest flex items-center gap-2"><Settings size={24} /> Configurações: {turmaAtiva.name}</h2>
-                {isAdmin && <button onClick={() => excluirTurma(turmaAtiva.id)} className="text-red-400 hover:text-red-500"><Trash2 size={20} /></button>}
+                <div className="flex items-center gap-3">
+                  <button onClick={() => { carregarDashboard(); setViewMode("dashboard"); }} className="flex items-center gap-2 bg-white text-[#2B2B2B] px-3 py-2 font-bold uppercase text-xs hover:bg-gray-200 transition-colors"><ArrowLeft size={16} />Voltar</button>
+                  {isAdmin && <button onClick={() => excluirTurma(turmaAtiva.id)} className="text-red-400 hover:text-red-500"><Trash2 size={20} /></button>}
+                </div>
               </div>
               <div className="p-6 grid grid-cols-1 md:grid-cols-2 gap-8">
                 <div className="col-span-1 md:col-span-2 grid grid-cols-1 sm:grid-cols-2 gap-6">
@@ -1090,7 +1142,10 @@ export default function Home() {
               <div className="flex-1 w-full space-y-6 min-w-0">
                 <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 border-b-4 border-[#00579D] pb-4">
                   <h2 className="text-2xl font-extrabold uppercase tracking-widest flex items-center gap-2"><ClipboardList size={28} />Fila: {turmaAtiva.name}</h2>
-                  {isPrivileged && <button onClick={alternarPausa} disabled={isProcessing} className={`font-bold uppercase tracking-widest py-3 px-6 border-b-4 active:border-b-0 active:translate-y-1 flex items-center gap-2 text-white ${isPaused ? "bg-[#00579D] border-[#003865]" : "bg-[#2B2B2B] border-black hover:bg-black"}`}>{isPaused ? <PlayCircle size={20} /> : <PauseCircle size={20} />}{isPaused ? "Liberar Turma" : "Bloquear Turma"}</button>}
+                  <div className="flex items-center gap-3 flex-wrap">
+                    {isPrivileged && <button onClick={() => { carregarDashboard(); setViewMode("dashboard"); }} className="flex items-center gap-2 bg-white text-[#2B2B2B] border-2 border-[#2B2B2B] px-4 py-2 font-bold uppercase text-xs hover:bg-gray-100 transition-colors"><ArrowLeft size={16} />Voltar</button>}
+                    {isPrivileged && <button onClick={alternarPausa} disabled={isProcessing} className={`font-bold uppercase tracking-widest py-3 px-6 border-b-4 active:border-b-0 active:translate-y-1 flex items-center gap-2 text-white ${isPaused ? "bg-[#00579D] border-[#003865]" : "bg-[#2B2B2B] border-black hover:bg-black"}`}>{isPaused ? <PlayCircle size={20} /> : <PauseCircle size={20} />}{isPaused ? "Liberar Turma" : "Bloquear Turma"}</button>}
+                  </div>
                 </div>
 
                 {isPrivileged && (
@@ -1138,7 +1193,7 @@ export default function Home() {
                       ) : meuPedido.status === "saida" ? (
                         <div className="w-full space-y-5">
                           <p className="text-[#00579D] font-bold uppercase text-xl">Você está fora.</p>
-                          <button onClick={() => registrarChegada(meuPedido)} disabled={isProcessing} className="w-full bg-[#2B2B2B] text-white font-bold uppercase py-5 border-b-4 border-black active:border-b-0 active:translate-y-1 flex justify-center items-center gap-2 text-lg disabled:opacity-60 disabled:cursor-not-allowed"><CheckCircle2 size={24} />Confirmar Retorno</button>
+                          <button onClick={() => registrarChegada(meuPedido)} disabled={isProcessing || chegadaEmProcesso.has(meuPedido.id)} className="w-full bg-[#2B2B2B] text-white font-bold uppercase py-5 border-b-4 border-black active:border-b-0 active:translate-y-1 flex justify-center items-center gap-2 text-lg disabled:opacity-60 disabled:cursor-not-allowed"><CheckCircle2 size={24} />Confirmar Retorno</button>
                         </div>
                       ) : null}
                     </section>
@@ -1153,8 +1208,8 @@ export default function Home() {
                           : noBanheiroList.map(af => {
                             const tm = Math.floor((Date.now() - new Date(af.go_time!).getTime()) / 60000);
                             const exc = tm >= (turmaAtiva.time_limit_minutes || 15);
-                            return <li key={af.id} className={`p-4 flex justify-between items-center ${exc ? "bg-red-50 border-l-4 border-red-600" : "hover:bg-gray-50"}`}>
-                              <div><p className={`font-extrabold text-lg uppercase ${exc ? "text-red-700" : "text-[#00579D]"}`}>{af.name}</p><p className="text-xs font-bold text-gray-500 uppercase mt-1">Saída: {formatarHora(af.go_time)}</p>{exc && <p className="text-xs font-bold text-red-600 uppercase mt-1 flex items-center gap-1 animate-pulse"><ShieldAlert size={14} />Excedeu {tm} min</p>}</div>
+                            return <li key={af.id} className={`p-4 flex justify-between items-center ${isPrivileged && exc ? "bg-red-50 border-l-4 border-red-600" : "hover:bg-gray-50"}`}>
+                              <div><p className={`font-extrabold text-lg uppercase ${isPrivileged && exc ? "text-red-700" : "text-[#00579D]"}`}>{af.name}</p>{isPrivileged && <p className="text-xs font-bold text-gray-500 uppercase mt-1">Saída: {formatarHora(af.go_time)}</p>}{isPrivileged && exc && <p className="text-xs font-bold text-red-600 uppercase mt-1 flex items-center gap-1 animate-pulse"><ShieldAlert size={14} />Excedeu {tm} min</p>}</div>
                               {isPrivileged && <div className="flex gap-2"><button onClick={() => forcarRetornoAluno(af)} disabled={isProcessing} className="p-3 bg-green-600 text-white hover:bg-green-700 rounded-sm disabled:opacity-60"><CheckCircle2 size={18} /></button><button onClick={() => cancelarPedido(af)} disabled={isProcessing} className="p-3 bg-red-600 text-white hover:bg-red-700 rounded-sm disabled:opacity-60"><Trash2 size={18} /></button></div>}
                             </li>;
                           })}
@@ -1164,10 +1219,38 @@ export default function Home() {
                       <div className="bg-[#2B2B2B] text-white px-4 py-3 font-bold uppercase flex justify-between"><span>Fila ({filaEsperaOrdenada.length})</span><ClipboardList size={18} /></div>
                       <ul className="divide-y divide-gray-200 max-h-60 overflow-y-auto">
                         {filaEsperaOrdenada.length === 0 ? <p className="text-center text-gray-500 font-medium italic uppercase text-sm p-6">Fila vazia</p>
-                          : filaEsperaOrdenada.map((a, i) => <li key={a.id} className="p-4 flex flex-wrap gap-2 justify-between items-center hover:bg-gray-50">
-                            <div className="flex items-center gap-4"><span className="text-[#00579D] font-black text-xl w-6">{i + 1}º</span><div><p className="font-bold text-[#2B2B2B] uppercase">{a.name}</p><p className="text-xs font-bold text-gray-500 uppercase">Req: {formatarHora(a.require_time)}</p></div></div>
-                            {isPrivileged && <div className="flex gap-2 items-center"><div className="flex flex-col gap-1 mr-2"><button onClick={() => moverPosicao(i, "up")} disabled={i === 0 || isProcessing} className="p-1 bg-gray-200 hover:bg-gray-300 rounded disabled:opacity-30"><ArrowUp size={14} /></button><button onClick={() => moverPosicao(i, "down")} disabled={i === filaEsperaOrdenada.length - 1 || isProcessing} className="p-1 bg-gray-200 hover:bg-gray-300 rounded disabled:opacity-30"><ArrowDown size={14} /></button></div><button onClick={() => forcarSaidaAluno(a)} disabled={isProcessing} className="p-2 bg-green-600 text-white hover:bg-green-700 disabled:opacity-60"><DoorOpen size={16} /></button><button onClick={() => cancelarPedido(a)} disabled={isProcessing} className="p-2 bg-[#2B2B2B] text-white hover:bg-black disabled:opacity-60"><Trash2 size={16} /></button></div>}
-                          </li>)}
+                          : filaEsperaOrdenada.map((a, i) => {
+                            const isMe = a.user_id === currentUser?.user_id;
+                            const podeDarVez = isMe && !isPrivileged && i < filaEsperaOrdenada.length - 1;
+                            return (
+                              <li key={a.id} className={`p-4 flex flex-wrap gap-2 justify-between items-center hover:bg-gray-50 ${isMe && !isPrivileged ? "bg-blue-50 border-l-4 border-[#00579D]" : ""}`}>
+                                <div className="flex items-center gap-4">
+                                  <span className="text-[#00579D] font-black text-xl w-6">{i + 1}º</span>
+                                  <div>
+                                    <p className="font-bold text-[#2B2B2B] uppercase">{a.name}{isMe && !isPrivileged ? <span className="ml-2 text-[10px] text-[#00579D] font-black">(você)</span> : ""}</p>
+                                    {isPrivileged && <p className="text-xs font-bold text-gray-500 uppercase">Req: {formatarHora(a.require_time)}</p>}
+                                  </div>
+                                </div>
+                                <div className="flex gap-2 items-center">
+                                  {podeDarVez && (
+                                    <button onClick={darMinhaVez} disabled={isProcessing} title="Deixar a pessoa de trás passar na minha frente" className="flex items-center gap-1 px-3 py-2 bg-amber-500 text-white font-bold uppercase text-xs hover:bg-amber-600 border-b-2 border-amber-700 active:border-b-0 active:translate-y-0.5 disabled:opacity-50">
+                                      <ChevronsDown size={14} /> Dar vez
+                                    </button>
+                                  )}
+                                  {isPrivileged && (
+                                    <>
+                                      <div className="flex flex-col gap-1 mr-2">
+                                        <button onClick={() => moverPosicao(i, "up")} disabled={i === 0 || isProcessing} className="p-1 bg-gray-200 hover:bg-gray-300 rounded disabled:opacity-30"><ArrowUp size={14} /></button>
+                                        <button onClick={() => moverPosicao(i, "down")} disabled={i === filaEsperaOrdenada.length - 1 || isProcessing} className="p-1 bg-gray-200 hover:bg-gray-300 rounded disabled:opacity-30"><ArrowDown size={14} /></button>
+                                      </div>
+                                      <button onClick={() => forcarSaidaAluno(a)} disabled={isProcessing} className="p-2 bg-green-600 text-white hover:bg-green-700 disabled:opacity-60"><DoorOpen size={16} /></button>
+                                      <button onClick={() => cancelarPedido(a)} disabled={isProcessing} className="p-2 bg-[#2B2B2B] text-white hover:bg-black disabled:opacity-60"><Trash2 size={16} /></button>
+                                    </>
+                                  )}
+                                </div>
+                              </li>
+                            );
+                          })}
                       </ul>
                     </section>
                   </div>
