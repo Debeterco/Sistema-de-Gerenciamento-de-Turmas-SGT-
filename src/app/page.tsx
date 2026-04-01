@@ -1208,8 +1208,8 @@ export default function Home() {
                           : noBanheiroList.map(af => {
                             const tm = Math.floor((Date.now() - new Date(af.go_time!).getTime()) / 60000);
                             const exc = tm >= (turmaAtiva.time_limit_minutes || 15);
-                            return <li key={af.id} className={`p-4 flex justify-between items-center ${exc ? "bg-red-50 border-l-4 border-red-600" : "hover:bg-gray-50"}`}>
-                              <div><p className={`font-extrabold text-lg uppercase ${exc ? "text-red-700" : "text-[#00579D]"}`}>{af.name}</p>{isPrivileged && <p className="text-xs font-bold text-gray-500 uppercase mt-1">Saída: {formatarHora(af.go_time)}</p>}{exc && <p className="text-xs font-bold text-red-600 uppercase mt-1 flex items-center gap-1 animate-pulse"><ShieldAlert size={14} />Excedeu {tm} min</p>}</div>
+                            return <li key={af.id} className={`p-4 flex justify-between items-center ${isPrivileged && exc ? "bg-red-50 border-l-4 border-red-600" : "hover:bg-gray-50"}`}>
+                              <div><p className={`font-extrabold text-lg uppercase ${isPrivileged && exc ? "text-red-700" : "text-[#00579D]"}`}>{af.name}</p>{isPrivileged && <p className="text-xs font-bold text-gray-500 uppercase mt-1">Saída: {formatarHora(af.go_time)}</p>}{isPrivileged && exc && <p className="text-xs font-bold text-red-600 uppercase mt-1 flex items-center gap-1 animate-pulse"><ShieldAlert size={14} />Excedeu {tm} min</p>}</div>
                               {isPrivileged && <div className="flex gap-2"><button onClick={() => forcarRetornoAluno(af)} disabled={isProcessing} className="p-3 bg-green-600 text-white hover:bg-green-700 rounded-sm disabled:opacity-60"><CheckCircle2 size={18} /></button><button onClick={() => cancelarPedido(af)} disabled={isProcessing} className="p-3 bg-red-600 text-white hover:bg-red-700 rounded-sm disabled:opacity-60"><Trash2 size={18} /></button></div>}
                             </li>;
                           })}
