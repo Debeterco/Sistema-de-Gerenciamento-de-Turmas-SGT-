@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { createBrowserClient } from "@supabase/ssr";
+import { createClient } from "@supabase/supabase-js";
 import {
   UserPlus, CheckCircle2, LogOut,
   DoorOpen, PauseCircle, PlayCircle, Trash2, ShieldAlert,
